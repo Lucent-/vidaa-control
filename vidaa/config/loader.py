@@ -22,13 +22,12 @@ from .schema import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Config search paths (in priority order)
-CONFIG_SEARCH_PATHS = [
-    Path("config.yaml"),                              # Current directory (primary)
-    Path("/app/config.yaml"),                         # Docker
-    Path.home() / ".config" / "vidaa" / "config.yaml",  # User home
-    Path("/etc/vidaa/config.yaml"),                   # System-wide
-]
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "vidaa-control" / "config.yaml"
+LEGACY_HOME_CONFIG_PATH = Path.home() / "config.yaml"
+
+# Exported for backwards compatibility. VIDAA_CONFIG_PATH is evaluated at
+# load time so callers can set it after importing the package.
+CONFIG_SEARCH_PATHS = [DEFAULT_CONFIG_PATH, LEGACY_HOME_CONFIG_PATH]
 
 # Legacy config paths for migration
 LEGACY_CLI_CONFIG = Path.home() / ".config" / "vidaa" / "config.json"
@@ -61,6 +60,25 @@ ENV_MAPPINGS = {
 # Module-level cached config
 _cached_config: Optional[Dict] = None
 _cached_path: Optional[Path] = None
+_save_path: Optional[Path] = None
+_cached_search_paths: Optional[tuple] = None
+
+
+def _get_config_paths(config_path: Optional[str] = None) -> tuple[List[Path], Path]:
+    """Return config search paths and the path to use for a new config."""
+    if config_path:
+        explicit_path = Path(config_path).expanduser()
+        return [explicit_path], explicit_path
+
+    env_path = os.environ.get("VIDAA_CONFIG_PATH")
+    if env_path:
+        configured_path = Path(env_path).expanduser()
+        return [configured_path], configured_path
+
+    if DEFAULT_CONFIG_PATH.exists():
+        return [DEFAULT_CONFIG_PATH], DEFAULT_CONFIG_PATH
+
+    return [DEFAULT_CONFIG_PATH, LEGACY_HOME_CONFIG_PATH], DEFAULT_CONFIG_PATH
 
 
 def load_config(config_path: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
@@ -73,19 +91,22 @@ def load_config(config_path: Optional[str] = None, use_cache: bool = True) -> Di
     Returns:
         Merged configuration dictionary
     """
-    global _cached_config, _cached_path
+    global _cached_config, _cached_path, _save_path, _cached_search_paths
 
-    if use_cache and _cached_config is not None:
+    search_paths, preferred_save_path = _get_config_paths(config_path)
+    search_key = tuple(search_paths)
+
+    if (
+        use_cache
+        and _cached_config is not None
+        and _cached_search_paths == search_key
+    ):
         return _cached_config
 
     config = _deep_copy_config(DEFAULT_CONFIG)
     loaded_path = None
 
-    # Build search paths
-    search_paths: List[Path] = []
-    if config_path:
-        search_paths.append(Path(config_path))
-    search_paths.extend(CONFIG_SEARCH_PATHS)
+    _save_path = preferred_save_path
 
     # Try YAML files first
     if HAS_YAML:
@@ -96,6 +117,9 @@ def load_config(config_path: Optional[str] = None, use_cache: bool = True) -> Di
                         user_config = yaml.safe_load(f) or {}
                     config = deep_merge(config, user_config)
                     loaded_path = path
+                    # Keep writing to a legacy config when that is the file we
+                    # loaded. Migration to the new path remains explicit.
+                    _save_path = path
                     _LOGGER.info("Loaded config from %s", path)
                     break
                 except Exception as e:
@@ -114,6 +138,7 @@ def load_config(config_path: Optional[str] = None, use_cache: bool = True) -> Di
     # Cache the config
     _cached_config = config
     _cached_path = loaded_path
+    _cached_search_paths = search_key
 
     return config
 
@@ -235,17 +260,22 @@ def save_config(config: Dict, path: Optional[Path] = None) -> bool:
 
     Args:
         config: Configuration dictionary to save
-        path: Destination path, or None for current directory
+        path: Destination path. Uses the loaded config path, VIDAA_CONFIG_PATH,
+            or ~/.config/vidaa-control/config.yaml when omitted.
 
     Returns:
         True if saved successfully
     """
+    global _cached_path, _save_path
+
     if not HAS_YAML:
         _LOGGER.error("PyYAML not installed. Cannot save YAML config.")
         return False
 
     if path is None:
-        path = Path("config.yaml")
+        path = _save_path or _get_config_paths()[1]
+    else:
+        path = Path(path).expanduser()
 
     # Remove internal metadata before saving
     save_data = {k: v for k, v in config.items() if not k.startswith("_")}
@@ -254,6 +284,9 @@ def save_config(config: Dict, path: Optional[Path] = None) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w') as f:
             yaml.safe_dump(save_data, f, default_flow_style=False, sort_keys=False)
+        _cached_path = path
+        _save_path = path
+        config["_loaded_from"] = str(path)
         _LOGGER.info("Saved config to %s", path)
         return True
     except Exception as e:
@@ -268,9 +301,11 @@ def get_config(use_cache: bool = True) -> Dict:
 
 def reload_config() -> Dict:
     """Force reload configuration from disk."""
-    global _cached_config, _cached_path
+    global _cached_config, _cached_path, _save_path, _cached_search_paths
     _cached_config = None
     _cached_path = None
+    _save_path = None
+    _cached_search_paths = None
     return load_config(use_cache=False)
 
 

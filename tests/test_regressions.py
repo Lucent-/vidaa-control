@@ -1,20 +1,96 @@
 import argparse
 import io
+import os
 import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from vidaa import cli
 from vidaa.client import VidaaTV
+from vidaa.config import loader as config_loader
 from vidaa.config.storage import TokenStorage
 from vidaa.protocol import AuthMethod, get_auth_method_order
 
 
 class RegressionTests(unittest.TestCase):
+    def tearDown(self):
+        config_loader._cached_config = None
+        config_loader._cached_path = None
+        config_loader._save_path = None
+        config_loader._cached_search_paths = None
+
+    def test_config_path_precedence_and_cwd_independence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default_path = root / ".config" / "vidaa-control" / "config.yaml"
+            legacy_path = root / "config.yaml"
+            env_path = root / "custom" / "config.yaml"
+            other_cwd = root / "elsewhere"
+            other_cwd.mkdir()
+
+            default_path.parent.mkdir(parents=True)
+            env_path.parent.mkdir(parents=True)
+            default_path.write_text("default_tv: default\n")
+            legacy_path.write_text("default_tv: legacy\n")
+            env_path.write_text("default_tv: env\n")
+
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(other_cwd)
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(config_loader, "DEFAULT_CONFIG_PATH", default_path))
+                    stack.enter_context(patch.object(config_loader, "LEGACY_HOME_CONFIG_PATH", legacy_path))
+                    stack.enter_context(patch.dict(os.environ, {"VIDAA_CONFIG_PATH": str(env_path)}, clear=True))
+                    config = config_loader.load_config(use_cache=False)
+                    self.assertEqual(config["default_tv"], "env")
+                    self.assertEqual(config_loader.get_config_path(), env_path)
+
+                    # Changing the environment path invalidates the cache.
+                    os.environ.pop("VIDAA_CONFIG_PATH")
+                    config = config_loader.load_config()
+                    self.assertEqual(config["default_tv"], "default")
+                    self.assertEqual(config_loader.get_config_path(), default_path)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_legacy_home_config_is_used_without_moving_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default_path = root / ".config" / "vidaa-control" / "config.yaml"
+            legacy_path = root / "config.yaml"
+            legacy_path.write_text("default_tv: legacy\n")
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(config_loader, "DEFAULT_CONFIG_PATH", default_path))
+                stack.enter_context(patch.object(config_loader, "LEGACY_HOME_CONFIG_PATH", legacy_path))
+                stack.enter_context(patch.dict(os.environ, {}, clear=True))
+                config = config_loader.load_config(use_cache=False)
+                config["default_tv"] = "updated-legacy"
+                self.assertTrue(config_loader.save_config(config))
+
+            self.assertFalse(default_path.exists())
+            self.assertIn("updated-legacy", legacy_path.read_text())
+
+    def test_missing_config_is_saved_to_new_default_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default_path = root / ".config" / "vidaa-control" / "config.yaml"
+            legacy_path = root / "config.yaml"
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(config_loader, "DEFAULT_CONFIG_PATH", default_path))
+                stack.enter_context(patch.object(config_loader, "LEGACY_HOME_CONFIG_PATH", legacy_path))
+                stack.enter_context(patch.dict(os.environ, {}, clear=True))
+                config = config_loader.load_config(use_cache=False)
+                self.assertTrue(config_loader.save_config(config))
+
+            self.assertTrue(default_path.exists())
+            self.assertFalse(legacy_path.exists())
+
     def test_set_source_publishes_canonical_name(self):
         tv = VidaaTV.__new__(VidaaTV)
         tv.client_id = "test-client"

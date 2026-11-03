@@ -1,5 +1,5 @@
 # vidaa-control Configuration
-# Copy this file to config.yaml and edit for your setup
+# Copy this file to ~/.config/vidaa-control/config.yaml and edit for your setup
 
 # MQTT Broker Connection (Home Assistant / Mosquitto)
 mqtt:
