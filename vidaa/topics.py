@@ -34,7 +34,7 @@ TOPIC_TV_INFO_RESPONSE = "/remoteapp/mobile/{client}/platform_service/data/gettv
 TOPIC_DEVICE_INFO_RESPONSE = "/remoteapp/mobile/{client}/platform_service/data/getdeviceinfo"
 TOPIC_CAPABILITY_RESPONSE = "/remoteapp/mobile/{client}/ui_service/data/capability"
 
-# Source IDs
+# Numeric IDs returned by the sourcelist action (kept for API compatibility).
 SOURCE_TV = "0"
 SOURCE_AV = "1"
 SOURCE_COMPONENT = "2"
@@ -43,14 +43,17 @@ SOURCE_HDMI2 = "4"
 SOURCE_HDMI3 = "5"
 SOURCE_HDMI4 = "6"
 
+# Canonical names accepted by the changesource action.  Several firmware
+# versions expose numeric IDs in sourcelist but require these names when
+# changing inputs.
 SOURCE_MAP = {
-    "tv": SOURCE_TV,
-    "av": SOURCE_AV,
-    "component": SOURCE_COMPONENT,
-    "hdmi1": SOURCE_HDMI1,
-    "hdmi2": SOURCE_HDMI2,
-    "hdmi3": SOURCE_HDMI3,
-    "hdmi4": SOURCE_HDMI4,
+    "tv": "TV",
+    "av": "AV",
+    "component": "COMPONENT",
+    "hdmi1": "HDMI1",
+    "hdmi2": "HDMI2",
+    "hdmi3": "HDMI3",
+    "hdmi4": "HDMI4",
 }
 
 # App definitions (appId values from TV's app list)

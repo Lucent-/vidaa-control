@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import logging
 import sys
 import time
 from typing import Optional
@@ -22,7 +23,22 @@ from .config import (
     DEFAULT_PORT,
 )
 from .keys import KEY_NAME_MAP, ALL_KEYS
+from .protocol import AuthMethod
 from .wol import wake_tv, get_mac_from_ip
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _parse_auth_method(value: Optional[str]) -> Optional[AuthMethod]:
+    """Parse an optional configured authentication method."""
+    if not value:
+        return None
+    try:
+        return AuthMethod(value.lower())
+    except ValueError:
+        _LOGGER.warning("Ignoring unknown authentication method %r", value)
+        return None
 
 
 def create_tv_client(tv_id: Optional[str] = None, ip: Optional[str] = None) -> VidaaTV:
@@ -42,7 +58,7 @@ def create_tv_client(tv_id: Optional[str] = None, ip: Optional[str] = None) -> V
             host=ip,
             port=DEFAULT_PORT,
             mac_address=mac_address,
-            use_dynamic_auth=True,
+            use_dynamic_auth=bool(mac_address),
             brand="his",
         )
 
@@ -57,8 +73,25 @@ def create_tv_client(tv_id: Optional[str] = None, ip: Optional[str] = None) -> V
     host = tv_config.get("host")
     port = tv_config.get("port", DEFAULT_PORT)
     brand = tv_config.get("brand", "his")
-    # MAC/UUID for dynamic auth - prefer device_id (network_type)
-    mac_address = tv_config.get("device_id") or tv_config.get("mac")
+    # list_tvs() adds the key as device_id, while get_tv_config() returns only
+    # the value. Resolve it explicitly so dynamic auth is not accidentally
+    # disabled for normal config entries.
+    configured_id = resolve_tv_id(tv_id) if tv_id else load_config().get("default_tv")
+    resolved_id = resolve_tv_id(configured_id) if configured_id else None
+    mac_address = tv_config.get("device_id") or tv_config.get("mac") or resolved_id
+    # IP addresses are temporary config keys, not valid dynamic-auth UUIDs.
+    if mac_address == host:
+        mac_address = get_mac_from_ip(host)
+
+    auth_method = _parse_auth_method(tv_config.get("auth_method"))
+
+    if not mac_address:
+        _LOGGER.info(
+            "No device MAC/UUID available for %s; using saved or static credentials",
+            host,
+        )
+    elif auth_method:
+        _LOGGER.info("Using configured %s authentication for %s", auth_method.value, host)
 
     if not host:
         raise ValueError(f"TV '{tv_id or 'default'}' has no host configured.")
@@ -67,8 +100,9 @@ def create_tv_client(tv_id: Optional[str] = None, ip: Optional[str] = None) -> V
         host=host,
         port=port,
         mac_address=mac_address,
-        use_dynamic_auth=True,
+        use_dynamic_auth=bool(mac_address),
         brand=brand,
+        auth_method=auth_method,
     )
 
 
@@ -266,21 +300,16 @@ def cmd_source(args):
 def cmd_config(args):
     """View or set configuration."""
     if args.action == "show":
-        config = load_config()
         tvs = list_tvs()
-        default_tv_id = config.get("default_tv")
 
         if not tvs:
             print("No TVs configured. Use 'tv config add <ip>' to add a TV.")
             return 0
 
         print("Configured TVs:")
-        for tv_id in tvs:
-            tv_config = get_tv_config(tv_id)
-            if not tv_config:
-                continue
-
-            is_default = " (default)" if tv_id == default_tv_id else ""
+        for tv_config in tvs:
+            tv_id = tv_config["device_id"]
+            is_default = " (default)" if tv_config.get("is_default") else ""
             alias = tv_config.get("alias", "")
             alias_str = f" [{alias}]" if alias else ""
             name = tv_config.get("name", "")
@@ -290,21 +319,18 @@ def cmd_config(args):
             print(f"    Host:  {tv_config.get('host', '(not set)')}")
             print(f"    Port:  {tv_config.get('port', DEFAULT_PORT)}")
 
-            device_id = tv_config.get("device_id")
-            if device_id:
-                print(f"    Device ID: {device_id}")
-
     elif args.action == "list":
         tvs = list_tvs()
         if not tvs:
             print("No TVs configured.")
             return 0
         print("Configured TVs:")
-        for tv_id in tvs:
-            tv_config = get_tv_config(tv_id)
-            alias = tv_config.get("alias", "") if tv_config else ""
+        for tv_config in tvs:
+            tv_id = tv_config["device_id"]
+            alias = tv_config.get("alias", "")
             alias_str = f" ({alias})" if alias else ""
-            print(f"  {tv_id}{alias_str}")
+            default_str = " [default]" if tv_config.get("is_default") else ""
+            print(f"  {tv_id}{alias_str}{default_str}")
 
     elif args.action == "add":
         if not args.value:
@@ -528,7 +554,7 @@ def cmd_monitor(args):
     device_id = tv_config.get("device_id") if tv_config else None
     token_data = storage.get_token(device_id) if device_id else None
     if not token_data:
-        token_data = storage.get_token(host, port)
+        token_data = storage.get_token(host=host, port=port)
     if not token_data:
         print("No stored credentials. Run './tv auth pair' first.")
         return 1
@@ -638,7 +664,7 @@ def cmd_auth(args):
     if args.action == "status":
         status = storage.get_token_status(device_id) if device_id else None
         if not status or not status.get("has_token"):
-            status = storage.get_token_status(host, port)
+            status = storage.get_token_status(host=host, port=port)
 
         if not status["has_token"]:
             print("No stored credentials. Run 'tv auth pair' to authenticate.")
@@ -698,7 +724,7 @@ def cmd_auth(args):
         if device_id:
             storage.delete_token(device_id)
         else:
-            storage.delete_token(host, port)
+            storage.delete_token(host=host, port=port)
         print("Stored credentials cleared.")
 
     elif args.action == "refresh":
@@ -726,6 +752,8 @@ def main():
     )
     parser.add_argument("--tv", help="TV ID or alias (uses default TV if not specified)")
     parser.add_argument("--ip", help="TV IP address (overrides --tv and config)")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="Show connection and authentication diagnostics")
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -822,6 +850,12 @@ def main():
     p_auth.set_defaults(func=cmd_auth)
 
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.DEBUG if args.verbose > 1 else logging.INFO,
+            format="%(levelname)s: %(message)s",
+        )
 
     if not args.command:
         parser.print_help()

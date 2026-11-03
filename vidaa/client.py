@@ -315,7 +315,7 @@ class VidaaTV:
         if not self._storage:
             return False
 
-        token_data = self._storage.get_token(self.host, self.port)
+        token_data = self._storage.get_token(host=self.host, port=self.port)
         if token_data and not token_data.get("needs_refresh"):
             self._access_token = token_data.get("access_token")
             self._authenticated = True
@@ -329,7 +329,11 @@ class VidaaTV:
         # Some VIDAA licensed TVs (e.g. Toshiba) reject dynamic auth but accept
         # hisenseservice/multimqttservice. Trying static first avoids triggering
         # rate limiting from failed dynamic attempts.
-        if self.use_dynamic_auth and self.mac_address and try_fallback:
+        # Pre-dynamic and unknown firmware may require the fixed credentials.
+        # For a detected modern protocol, use the matching dynamic method first
+        # instead of deliberately making a rejected static login attempt.
+        try_static_first = self._protocol_version is None or self._protocol_version < 3000
+        if self.use_dynamic_auth and self.mac_address and try_fallback and try_static_first:
             _LOGGER.info("Trying static credentials before dynamic auth...")
             if self._try_static_connect(timeout=min(timeout, 8.0)):
                 return True
@@ -482,18 +486,17 @@ class VidaaTV:
         then falls back to dynamic auth methods, then static again after a delay
         in case of rate limiting.
         """
-        auth_methods = get_auth_method_order()
+        auth_methods = get_auth_method_order(self._protocol_version)
 
         # Skip the method we already tried
         if self._auth_method in auth_methods:
             auth_methods = [m for m in auth_methods if m != self._auth_method]
 
-        # Try static credentials first — works on Toshiba/VIDAA licensed TVs
-        # that reject dynamic auth entirely, and avoids triggering rate limiting
-        _LOGGER.info("Trying static credentials first...")
-        if self._try_static_connect(timeout=timeout):
-            return True
-        _LOGGER.info("Static credentials failed, trying dynamic auth methods...")
+        if self._protocol_version is None or self._protocol_version < 3000:
+            _LOGGER.info("Trying static credentials first for legacy/unknown protocol...")
+            if self._try_static_connect(timeout=timeout):
+                return True
+            _LOGGER.info("Static credentials failed, trying dynamic auth methods...")
 
         for method in auth_methods:
             _LOGGER.info("Trying %s authentication...", method.value)
@@ -716,6 +719,8 @@ class VidaaTV:
 
         if access_token:
             self._access_token = access_token
+            if refresh_token:
+                self._refresh_token = refresh_token
             self._authenticated = True
             self._auth_required = False
 
@@ -736,7 +741,10 @@ class VidaaTV:
                     protocol_version=self._protocol_version,
                 )
 
-            _LOGGER.info("Token received and saved!")
+            if self._storage:
+                _LOGGER.info("Authentication token received and saved")
+            else:
+                _LOGGER.info("Authentication token received")
             self._auth_event.set()
 
     def _publish(self, topic: str, payload: Any = "") -> bool:
@@ -749,7 +757,10 @@ class VidaaTV:
             payload = json.dumps(payload)
 
         result = self._client.publish(topic, payload)
-        return result.rc == mqtt.MQTT_ERR_SUCCESS
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            _LOGGER.warning("Failed to publish %s (MQTT error %s)", topic, result.rc)
+            return False
+        return True
 
     def _request(self, topic: str, payload: Any = "", timeout: float = 5.0) -> Optional[dict]:
         """Send a request and wait for response."""
@@ -779,9 +790,19 @@ class VidaaTV:
 
         if wait_for_response:
             if self._auth_event.wait(timeout):
-                if self._authenticated:
-                    self._request_token()
-                return self._authenticated
+                if not self._authenticated:
+                    _LOGGER.warning("TV rejected the authentication PIN")
+                    return False
+
+                # PIN acceptance and token issuance are separate MQTT replies.
+                # Wait for the second one so callers can safely disconnect as
+                # soon as authenticate() succeeds.
+                self._auth_event.clear()
+                self._request_token()
+                if self._auth_event.wait(timeout) and self._access_token:
+                    return True
+                _LOGGER.warning("PIN accepted, but the TV did not issue an access token")
+                return False
             return False
 
         return True
@@ -843,14 +864,14 @@ class VidaaTV:
     def clear_saved_token(self):
         """Clear saved authentication token for this TV."""
         if self._storage:
-            self._storage.delete_token(self.host, self.port)
+            self._storage.delete_token(host=self.host, port=self.port)
         self._access_token = None
         self._authenticated = False
 
     def get_saved_token_info(self) -> Optional[dict]:
         """Get information about saved token for this TV."""
         if self._storage:
-            return self._storage.get_token(self.host, self.port)
+            return self._storage.get_token(host=self.host, port=self.port)
         return None
 
     def _is_tv_on(self, timeout: float = 3.0) -> bool:
@@ -1025,9 +1046,10 @@ class VidaaTV:
             print("TV is off. Command not sent.")
             return False
 
-        source_id = SOURCE_MAP.get(source.lower(), source)
+        source_key = source.lower().replace(" ", "").replace("_", "")
+        source_name = SOURCE_MAP.get(source_key, source)
         topic = get_topic(TOPIC_SET_SOURCE, self.client_id)
-        return self._publish(topic, {"sourceid": source_id})
+        return self._publish(topic, {"sourceid": source_name})
 
     def get_state(self, timeout: float = 5.0) -> Optional[dict]:
         """Get TV state information."""
