@@ -28,6 +28,13 @@ Used by the [ha-vidaa-tv](https://github.com/tombabolewski/ha-vidaa-tv) Home Ass
 pip install vidaa-control
 ```
 
+## Configuration
+
+The default configuration file is `~/.config/vidaa-control/config.yaml`.
+Set `VIDAA_CONFIG_PATH` to use a different location. If the default file does
+not exist, the CLI also checks the legacy `~/config.yaml` path without moving
+or deleting it.
+
 ## Quick Start
 
 ### CLI

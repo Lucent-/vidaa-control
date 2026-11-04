@@ -1,5 +1,5 @@
 # vidaa-control Configuration
-# Copy this file to config.yaml and edit for your setup
+# Copy this file to ~/.config/vidaa-control/config.yaml and edit for your setup
 
 # MQTT Broker Connection (Home Assistant / Mosquitto)
 mqtt:
@@ -19,6 +19,9 @@ tvs:
     alias: "living_room"     # Friendly name for CLI (--tv living_room)
     name: "Living Room TV"   # Display name
     mac: "XX:XX:XX:XX:XX:XX" # MAC address for Wake-on-LAN
+    use_dynamic_auth: true    # Set false for older TVs using static credentials
+    auth_method: "modern"    # legacy, middle, or modern; omit for auto-detection
+    auto_detect_protocol: true # Set false when the TV's UPnP port 38400 is unavailable
 
 # Default TV for CLI when --tv not specified (device_id or alias)
 default_tv: "living_room"

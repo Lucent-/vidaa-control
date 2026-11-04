@@ -12,6 +12,10 @@ DEFAULT_TV_CONFIG: Dict[str, Any] = {
     "alias": None,               # Friendly name for CLI (--tv alias)
     "name": None,                # Display name (auto-populated from TV)
     "brand": DEFAULT_BRAND,      # "his"
+    "mac": None,                 # Preferred MAC/UUID for dynamic auth and WoL
+    "use_dynamic_auth": None,    # None keeps legacy auto-selection behaviour
+    "auth_method": None,         # legacy, middle, modern, or auto when omitted
+    "auto_detect_protocol": True,  # Set false when UPnP port 38400 is unavailable
     # Auto-populated during pairing:
     # "model": None,
     # "sw_version": None,

@@ -116,10 +116,18 @@ def get_auth_method(protocol_version: Optional[int]) -> AuthMethod:
         return AuthMethod.LEGACY
 
 
-def get_auth_method_order() -> List[AuthMethod]:
+def get_auth_method_order(protocol_version: Optional[int] = None) -> List[AuthMethod]:
     """Get the order of authentication methods to try during fallback.
 
+    When the protocol is known, try its matching method first.  Falling back
+    from newest to oldest remains the safest order when detection failed.
+
     Returns:
-        List of AuthMethod values in order: MODERN, MIDDLE, LEGACY
+        Authentication methods in preferred fallback order.
     """
-    return [AuthMethod.MODERN, AuthMethod.MIDDLE, AuthMethod.LEGACY]
+    methods = [AuthMethod.MODERN, AuthMethod.MIDDLE, AuthMethod.LEGACY]
+    if protocol_version is None:
+        return methods
+
+    preferred = get_auth_method(protocol_version)
+    return [preferred, *(method for method in methods if method != preferred)]

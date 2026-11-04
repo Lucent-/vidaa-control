@@ -273,7 +273,7 @@ New devices must be paired with the TV before commands will work. Pairing involv
 
 ### Change Source Payload
 ```json
-{"sourceid": "3"}
+{"sourceid": "HDMI1"}
 ```
 
 ## App Launch

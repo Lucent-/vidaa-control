@@ -64,6 +64,8 @@ from .loader import (
     update_tv_config,
     add_tv,
     set_default_tv,
+    DEFAULT_CONFIG_PATH,
+    LEGACY_HOME_CONFIG_PATH,
     CONFIG_SEARCH_PATHS,
     # Backwards compatibility
     get_tv_ip,
@@ -127,6 +129,8 @@ __all__ = [
     "update_tv_config",
     "add_tv",
     "set_default_tv",
+    "DEFAULT_CONFIG_PATH",
+    "LEGACY_HOME_CONFIG_PATH",
     "CONFIG_SEARCH_PATHS",
     "get_tv_ip",
     "get_tv_port",

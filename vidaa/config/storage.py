@@ -19,13 +19,14 @@ _LOGGER = logging.getLogger(__name__)
 class TokenStorage:
     """Manages persistent storage of authentication tokens per device."""
 
-    DEFAULT_STORAGE_PATH = Path.cwd() / "tokens.json"
+    DEFAULT_STORAGE_PATH = Path.home() / ".config" / "vidaa" / "tokens.json"
 
     def __init__(self, storage_path: Optional[Path] = None):
         """Initialize token storage.
 
         Args:
-            storage_path: Path to token storage file. Defaults to ./tokens.json
+            storage_path: Path to token storage file. Defaults to
+                ~/.config/vidaa/tokens.json.
         """
         self.storage_path = storage_path or self.DEFAULT_STORAGE_PATH
         self._ensure_storage_dir()
@@ -41,7 +42,8 @@ class TokenStorage:
         try:
             with open(self.storage_path, "r") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError) as err:
+            _LOGGER.warning("Could not read token storage %s: %s", self.storage_path, err)
             return {}
 
     def _save_all(self, data: Dict[str, Any]):
@@ -81,6 +83,15 @@ class TokenStorage:
             # Also try just host as key
             if host in data:
                 return host, data[host]
+
+            # Current storage is keyed by device_id, so reconnects that only
+            # know the IP must match against the metadata in each entry.
+            for key, token_data in data.items():
+                if (
+                    token_data.get("host") == host
+                    and token_data.get("port", DEFAULT_PORT) == port
+                ):
+                    return key, token_data
 
         return None, None
 
@@ -164,15 +175,34 @@ class TokenStorage:
         if legacy_key in data and legacy_key != device_id:
             del data[legacy_key]
 
+        # A refresh response may omit the refresh token.  Keep the existing
+        # token and its original expiry instead of silently making the saved
+        # credentials unusable.
+        _, existing = self._find_token(device_id=device_id, host=host, port=port)
+        existing = existing or {}
+        if refresh_token is None:
+            refresh_token = existing.get("refresh_token")
+
         now = time.time()
+        refresh_time = now if refresh_token else None
+        refresh_expires_at = (
+            now + (refresh_token_duration_days * 24 * 60 * 60)
+            if refresh_token else None
+        )
+        if refresh_token == existing.get("refresh_token"):
+            refresh_time = existing.get("refresh_token_time", refresh_time)
+            refresh_expires_at = existing.get(
+                "refresh_token_expires_at", refresh_expires_at
+            )
+
         token_data = {
             "device_id": device_id,
             "access_token": access_token,
             "refresh_token": refresh_token,
             "access_token_time": now,
             "access_token_expires_at": now + (access_token_duration_days * 24 * 60 * 60),
-            "refresh_token_time": now if refresh_token else None,
-            "refresh_token_expires_at": now + (refresh_token_duration_days * 24 * 60 * 60) if refresh_token else None,
+            "refresh_token_time": refresh_time,
+            "refresh_token_expires_at": refresh_expires_at,
             "client_id": client_id,
             "mqtt_username": mqtt_username,
             "uuid": uuid,
@@ -180,9 +210,9 @@ class TokenStorage:
             "port": port,
             "auth_method": auth_method,
             "protocol_version": protocol_version,
-            "model": model,
-            "sw_version": sw_version,
-            "name": name,
+            "model": model if model is not None else existing.get("model"),
+            "sw_version": sw_version if sw_version is not None else existing.get("sw_version"),
+            "name": name if name is not None else existing.get("name"),
         }
 
         data[device_id] = token_data
