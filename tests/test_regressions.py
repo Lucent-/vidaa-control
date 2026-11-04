@@ -120,6 +120,88 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("living-room", output.getvalue())
         self.assertIn("default", output.getvalue())
 
+    def test_create_tv_client_prefers_configured_mac_and_auth_settings(self):
+        tv_config = {
+            "host": "192.0.2.10",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "device_id": "001122334455",
+            "use_dynamic_auth": True,
+            "auth_method": "middle",
+            "auto_detect_protocol": False,
+        }
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "get_tv_config", return_value=tv_config))
+            stack.enter_context(patch.object(cli, "resolve_tv_id", return_value="001122334455"))
+            get_mac = stack.enter_context(patch.object(cli, "get_mac_from_ip"))
+            stack.enter_context(patch.object(cli, "VidaaTV", side_effect=lambda **kwargs: kwargs))
+            with self.assertLogs(cli._LOGGER, level="INFO") as logs:
+                client_args = cli.create_tv_client(tv_id="living-room")
+
+        get_mac.assert_not_called()
+        self.assertEqual(client_args["mac_address"], "AA:BB:CC:DD:EE:FF")
+        self.assertTrue(client_args["use_dynamic_auth"])
+        self.assertIs(client_args["auth_method"], AuthMethod.MIDDLE)
+        self.assertFalse(client_args["auto_detect_protocol"])
+        self.assertIn("dynamic/middle", " ".join(logs.output))
+
+    def test_create_tv_client_keeps_explicit_dynamic_auth_without_mac(self):
+        tv_config = {
+            "host": "192.0.2.10",
+            "use_dynamic_auth": True,
+            "auto_detect_protocol": False,
+        }
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "get_tv_config", return_value=tv_config))
+            stack.enter_context(patch.object(cli, "resolve_tv_id", return_value=None))
+            stack.enter_context(patch.object(cli, "get_mac_from_ip", return_value=None))
+            stack.enter_context(patch.object(cli, "VidaaTV", side_effect=lambda **kwargs: kwargs))
+            client_args = cli.create_tv_client(tv_id="legacy-name")
+
+        self.assertTrue(client_args["use_dynamic_auth"])
+        self.assertIs(client_args["auth_method"], AuthMethod.MODERN)
+        self.assertFalse(client_args["auto_detect_protocol"])
+
+    def test_create_tv_client_supports_explicit_static_auth(self):
+        tv_config = {
+            "host": "192.0.2.10",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "use_dynamic_auth": False,
+            "auth_method": "modern",
+        }
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "get_tv_config", return_value=tv_config))
+            stack.enter_context(patch.object(cli, "resolve_tv_id", return_value=None))
+            get_mac = stack.enter_context(patch.object(cli, "get_mac_from_ip"))
+            stack.enter_context(patch.object(cli, "VidaaTV", side_effect=lambda **kwargs: kwargs))
+            client_args = cli.create_tv_client(tv_id="old-tv")
+
+        get_mac.assert_not_called()
+        self.assertFalse(client_args["use_dynamic_auth"])
+        self.assertIsNone(client_args["auth_method"])
+
+    def test_ip_override_reuses_matching_configured_mac(self):
+        configured_tv = {
+            "device_id": "001122334455",
+            "host": "192.0.2.10",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "use_dynamic_auth": True,
+            "auto_detect_protocol": False,
+            "auth_method": "legacy",
+        }
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "list_tvs", return_value=[configured_tv]))
+            get_mac = stack.enter_context(patch.object(cli, "get_mac_from_ip"))
+            stack.enter_context(patch.object(cli, "VidaaTV", side_effect=lambda **kwargs: kwargs))
+            client_args = cli.create_tv_client(ip="192.0.2.10")
+
+        get_mac.assert_not_called()
+        self.assertEqual(client_args["mac_address"], "AA:BB:CC:DD:EE:FF")
+        self.assertIs(client_args["auth_method"], AuthMethod.LEGACY)
+
     def test_protocol_specific_auth_method_is_first(self):
         self.assertIs(get_auth_method_order(2500)[0], AuthMethod.LEGACY)
         self.assertIs(get_auth_method_order(3100)[0], AuthMethod.MIDDLE)
